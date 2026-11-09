@@ -1,0 +1,36 @@
+name: Update gold fix monitor
+
+on:
+  schedule:
+    - cron: "*/30 * * * 0-5"   # every 30 min, Sun evening → Fri (gold trading week)
+  workflow_dispatch:
+  push:
+    paths:
+      - "data/lbma_fixes.csv"
+      - "src/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python src/pipeline.py
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data docs/data
+          git diff --cached --quiet || git commit -m "data: update $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase --quiet || true
+          git push
