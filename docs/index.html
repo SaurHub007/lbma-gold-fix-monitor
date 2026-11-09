@@ -65,17 +65,10 @@
     <div class="s" id="vd"></div>
   </div>
 
-  <div class="two" style="margin-top:0">
-    <div class="card">
-      <h2>LBMA Gold Price — AM &amp; PM fix</h2>
-      <div class="legend"><span><i style="background:var(--am)"></i>AM fix (10:30 London)</span><span><i style="background:var(--pm)"></i>PM fix (15:00 London)</span></div>
-      <div class="chartbox"><canvas id="cf"></canvas></div>
-    </div>
-    <div class="card">
-      <h2><span class="dot"></span>XAU/USD live</h2>
-      <div class="legend"><span><i style="background:var(--gold)"></i>Spot (5-min + live ticks)</span><span><i class="dash" style="border-color:var(--pm)"></i>Today's fixes</span></div>
-      <div class="chartbox"><canvas id="cl"></canvas></div>
-    </div>
+  <div class="card">
+    <h2><span class="dot"></span>LBMA Gold Price vs XAU/USD live</h2>
+    <div class="legend"><span><i style="background:var(--gold)"></i>XAU/USD spot (5-min + live ticks)</span><span><i style="background:var(--pm)"></i>LBMA price (AM fix → PM fix → next AM…)</span></div>
+    <div class="chartbox" style="height:420px"><canvas id="cl"></canvas></div>
   </div>
 
   <div class="two">
@@ -154,38 +147,52 @@ const baseOpts = (xtick, tip) => ({
   }});
 let fixChart = null, liveChart = null, liveTicks = [];
 
-function drawChart(){
-  // 1) LBMA AM/PM fix line chart
-  const H = S.fix_history || [];
-  const toPts = k => H.filter(r => r[k] != null).map(r => ({x:Date.parse(r.date+"T12:00:00Z"), y:r[k]}));
-  if (fixChart) fixChart.destroy();
-  fixChart = new Chart(document.getElementById("cf"), {type:"line", data:{datasets:[
-      {label:"AM fix", data:toPts("am"), borderColor:css("--am"), borderWidth:2, pointRadius:2, tension:.2},
-      {label:"PM fix", data:toPts("pm"), borderColor:css("--pm"), borderWidth:2, pointRadius:2, tension:.2}]},
-    options:(() => { const o = baseOpts(v => fmtD(v,{day:"numeric",month:"short"}), x => fmtD(x,{dateStyle:"medium"}));
-      const xs = toPts("pm").concat(toPts("am")).map(p => p.x);
-      o.scales.x.min = Math.min(...xs); o.scales.x.max = Math.max(...xs); return o; })()});
-  drawLive();
-}
+function drawChart(){ drawLive(); }
 
 function drawLive(){
-  // 2) XAU/USD live: last ~36h of 5-min bars + live ticks, today's fixes as reference
-  const t = S.chart.t, sp = S.chart.spot, from = t.at(-1) - 36*3600;
+  const t = S.chart.t, sp = S.chart.spot;
   const pts = [];
-  t.forEach((x,i) => { if (x < from) return;
-    if (pts.length && x - t[i-1] > 3600) pts.push({x:(t[i-1]+300)*1000, y:null});
+  t.forEach((x,i) => {
+    if (i && x - t[i-1] > 3600) pts.push({x:(t[i-1]+300)*1000, y:null}); // market closed
     pts.push({x:x*1000, y:sp[i]}); });
   const all = pts.concat(liveTicks.filter(p => p.x > (pts.at(-1)?.x || 0)));
   const xmin = all[0]?.x, xmax = all.at(-1)?.x;
-  const ds = [{label:"XAU/USD", data:all, borderColor:css("--gold"), borderWidth:1.6, pointRadius:0, spanGaps:false}];
-  const lastDate = S.fix_history?.at(-1);
-  for (const f of S.chart.fixes.filter(f => f.t*1000 >= xmin))
-    ds.push({label:`${f.kind} fix`, data:[{x:Math.max(f.t*1000,xmin),y:f.level},{x:xmax,y:f.level}],
-      borderColor:f.kind==="AM"?css("--am"):css("--pm"), borderWidth:1, borderDash:[5,4], pointRadius:0});
+  // one continuous LBMA line: each fix holds until the next one replaces it
+  const fx = S.chart.fixes.slice().sort((a,b) => a.t - b.t);
+  const lb = [];
+  fx.forEach((f,i) => {
+    const x = f.t*1000;
+    if (x >= xmin) lb.push({x, y:f.level});
+    else if (!fx[i+1] || fx[i+1].t*1000 > xmin) lb.push({x:xmin, y:f.level}); // level in force at chart start
+  });
+  if (lb.length) lb.push({x:xmax, y:lb.at(-1).y});
+  const kinds = {}; fx.forEach(f => kinds[f.t*1000] = f.kind);
+  const ds = [
+    {label:"XAU/USD", data:all, borderColor:css("--gold"), borderWidth:1.6, pointRadius:0, spanGaps:false, order:2},
+    {label:"LBMA", data:lb, borderColor:css("--pm"), borderWidth:2, stepped:"before", order:1,
+     pointRadius:ctx => kinds[ctx.raw?.x] ? 3 : 0, pointBackgroundColor:css("--pm")}];
   if (liveChart) liveChart.destroy();
-  const o = baseOpts(v => fmtD(v,{weekday:"short",hour:"2-digit",minute:"2-digit"}),
-                     x => fmtD(x,{dateStyle:"short",timeStyle:"short"})+" London");
-  o.scales.x.min = xmin; o.scales.x.max = xmax;
+  const o = {
+    animation:false, maintainAspectRatio:false, parsing:false,
+    interaction:{mode:"nearest", axis:"x", intersect:false},
+    plugins:{legend:{display:false}, tooltip:{callbacks:{
+      title:i => fmtD(i[0].parsed.x,{dateStyle:"short",timeStyle:"short"})+" London",
+      label:i => i.dataset.label === "LBMA"
+        ? `LBMA ${kinds[i.raw.x] ? kinds[i.raw.x]+" fix" : "(in force)"}: ${fmt(i.parsed.y)}`
+        : `XAU/USD: ${fmt(i.parsed.y)}`}}},
+    scales:{
+      x:{type:"linear", min:xmin, max:xmax, grid:{color:css("--line")},
+         afterBuildTicks: ax => { // one tick per London midnight
+           const ticks = [];
+           for (let d = Math.floor(xmin/864e5)*864e5; d <= xmax + 864e5; d += 864e5) {
+             const h = +new Date(d).toLocaleString("en-GB",{timeZone:"Europe/London",hour:"2-digit",hourCycle:"h23"});
+             const m = h < 12 ? d - h*36e5 : d + (24-h)*36e5;
+             if (m >= xmin && m <= xmax) ticks.push({value:m});
+           }
+           ax.ticks = ticks; },
+         ticks:{color:css("--mute"), autoSkip:true, maxRotation:0, callback:v => fmtD(v,{weekday:"short",day:"numeric"})}},
+      y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
+    }};
   liveChart = new Chart(document.getElementById("cl"), {type:"line", data:{datasets:ds}, options:o});
 }
 
