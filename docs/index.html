@@ -7,10 +7,10 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   :root { --bg:#fbfaf7; --card:#fff; --ink:#1d1d1b; --mute:#6b6b66; --line:#e6e3dc;
-          --gold:#b8860b; --am:#2f6fb3; --pm:#c2410c; --good:#15803d; --bad:#b91c1c; }
+          --gold:#b8860b; --spot:#2563eb; --lbma:#d97706; --am:#2f6fb3; --pm:#c2410c; --good:#15803d; --bad:#b91c1c; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#141413; --card:#1e1e1c; --ink:#ecebe6; --mute:#9d9b94; --line:#33322f;
-            --gold:#e0b44c; --am:#6aa6e6; --pm:#f08a55; --good:#4ade80; --bad:#f87171; }
+            --gold:#e0b44c; --spot:#60a5fa; --lbma:#fbbf24; --am:#6aa6e6; --pm:#f08a55; --good:#4ade80; --bad:#f87171; }
   }
   * { box-sizing:border-box }
   body { margin:0; background:var(--bg); color:var(--ink);
@@ -73,7 +73,7 @@
       <h2 style="margin:0"><span class="dot"></span>LBMA Gold Price vs XAU/USD live</h2>
       <div class="rng" id="rng"><button data-d="2">2D</button><button data-d="7">1W</button><button data-d="0" class="on">All</button></div>
     </div>
-    <div class="legend"><span><i style="background:var(--gold)"></i>XAU/USD spot (live)</span><span><i style="background:var(--pm)"></i>LBMA price (AM fix → PM fix → next AM…)</span></div>
+    <div class="legend"><span><i style="background:var(--spot)"></i>XAU/USD spot (live)</span><span><i style="background:var(--lbma)"></i>LBMA price (AM fix → PM fix → next AM…)</span></div>
     <div class="chartbox" style="height:420px"><canvas id="cl"></canvas></div>
   </div>
 
@@ -162,50 +162,63 @@ document.getElementById("rng").addEventListener("click", e => {
 function drawChart(){ drawLive(); }
 
 function drawLive(){
-  const t = S.chart.t, sp = S.chart.spot;
-  const pts = [];
-  t.forEach((x,i) => {
-    if (i && x - t[i-1] > 3600) pts.push({x:(t[i-1]+300)*1000, y:null}); // market closed
-    pts.push({x:x*1000, y:sp[i]}); });
-  let all = pts.concat(liveTicks.filter(p => p.x > (pts.at(-1)?.x || 0)));
-  const xmax = all.at(-1)?.x;
-  if (rangeDays) all = all.filter(p => p.x >= xmax - rangeDays*864e5);
-  while (all.length && all[0].y == null) all.shift();
-  const xmin = all[0]?.x;
+  // real-time points (ms)
+  let raw = S.chart.t.map((x,i) => ({t:x*1000, y:S.chart.spot[i]}));
+  raw = raw.concat(liveTicks.filter(p => p.x > (raw.at(-1)?.t || 0)).map(p => ({t:p.x, y:p.y})));
+  const tmax = raw.at(-1)?.t;
+  if (rangeDays) raw = raw.filter(p => p.t >= tmax - rangeDays*864e5);
+  const tmin = raw[0]?.t;
+
+  // Market-closed time is cut out of the x-axis, so lines join smoothly across nights/weekends
+  const GAP = 36e5, KEEP = 5*6e4, gaps = [];
+  for (let i = 1; i < raw.length; i++) if (raw[i].t - raw[i-1].t > GAP) gaps.push({a:raw[i-1].t, b:raw[i].t});
+  const cx = t => { let c = t;
+    for (const g of gaps) {
+      if (t >= g.b) c -= (g.b - g.a - KEEP);
+      else if (t > g.a) { c -= (t - g.a) - (t - g.a) / (g.b - g.a) * KEEP; break; }
+      else break; }
+    return c; };
+  const spot = raw.map(p => ({x:cx(p.t), y:p.y, t:p.t}));
+  const xmin = cx(tmin), xmax = cx(tmax);
+
   // one continuous LBMA line: each fix holds until the next one replaces it
   const fx = S.chart.fixes.slice().sort((a,b) => a.t - b.t);
   const lb = [];
   fx.forEach((f,i) => {
-    const x = f.t*1000;
-    if (x >= xmin) lb.push({x, y:f.level});
-    else if (!fx[i+1] || fx[i+1].t*1000 > xmin) lb.push({x:xmin, y:f.level}); // level in force at chart start
+    const t = f.t*1000;
+    if (t >= tmin) lb.push({x:cx(t), y:f.level, t, kind:f.kind});
+    else if (!fx[i+1] || fx[i+1].t*1000 > tmin) lb.push({x:xmin, y:f.level, t:tmin});
   });
-  if (lb.length) lb.push({x:xmax, y:lb.at(-1).y});
-  const kinds = {}; fx.forEach(f => kinds[f.t*1000] = f.kind);
+  if (lb.length) lb.push({x:xmax, y:lb.at(-1).y, t:tmax});
+
+  // day ticks at London midnights that fall in trading time
+  const dayTicks = [];
+  for (let d = Math.floor(tmin/864e5)*864e5; d <= tmax + 864e5; d += 864e5) {
+    const h = +new Date(d).toLocaleString("en-GB",{timeZone:"Europe/London",hour:"2-digit",hourCycle:"h23"});
+    const m = h < 12 ? d - h*36e5 : d + (24-h)*36e5;
+    if (m < tmin || m > tmax || gaps.some(g => m > g.a && m < g.b)) continue;
+    if (/Sat|Sun/.test(fmtD(m,{weekday:"short"}))) continue; // no weekend labels
+    dayTicks.push({value:cx(m), label:fmtD(m, rangeDays && rangeDays <= 7 ? {weekday:"short",day:"numeric"} : {day:"numeric",month:"short"})});
+  }
+  const lbl = {}; dayTicks.forEach(d => lbl[d.value] = d.label);
+
   const ds = [
-    {label:"XAU/USD", data:all, borderColor:css("--gold"), borderWidth:1.6, pointRadius:0, spanGaps:false, order:2},
-    {label:"LBMA", data:lb, borderColor:css("--pm"), borderWidth:2, stepped:"before", order:1,
-     pointRadius:ctx => kinds[ctx.raw?.x] ? 3 : 0, pointBackgroundColor:css("--pm")}];
+    {label:"XAU/USD", data:spot, borderColor:css("--spot"), borderWidth:1.5, pointRadius:0, tension:0, order:2},
+    {label:"LBMA", data:lb, borderColor:css("--lbma"), borderWidth:2.2, stepped:"before", order:1,
+     pointRadius:ctx => ctx.raw?.kind ? 3 : 0, pointBackgroundColor:css("--lbma"), pointBorderColor:css("--card")}];
   if (liveChart) liveChart.destroy();
   const o = {
     animation:false, maintainAspectRatio:false, parsing:false,
     interaction:{mode:"nearest", axis:"x", intersect:false},
     plugins:{legend:{display:false}, tooltip:{callbacks:{
-      title:i => fmtD(i[0].parsed.x,{dateStyle:"short",timeStyle:"short"})+" London",
+      title:i => fmtD(i[0].raw.t,{dateStyle:"short",timeStyle:"short"})+" London",
       label:i => i.dataset.label === "LBMA"
-        ? `LBMA ${kinds[i.raw.x] ? kinds[i.raw.x]+" fix" : "(in force)"}: ${fmt(i.parsed.y)}`
+        ? `LBMA ${i.raw.kind ? i.raw.kind+" fix" : "(in force)"}: ${fmt(i.parsed.y)}`
         : `XAU/USD: ${fmt(i.parsed.y)}`}}},
     scales:{
       x:{type:"linear", min:xmin, max:xmax, grid:{color:css("--line")},
-         afterBuildTicks: ax => { // one tick per London midnight
-           const ticks = [];
-           for (let d = Math.floor(xmin/864e5)*864e5; d <= xmax + 864e5; d += 864e5) {
-             const h = +new Date(d).toLocaleString("en-GB",{timeZone:"Europe/London",hour:"2-digit",hourCycle:"h23"});
-             const m = h < 12 ? d - h*36e5 : d + (24-h)*36e5;
-             if (m >= xmin && m <= xmax) ticks.push({value:m});
-           }
-           ax.ticks = ticks; },
-         ticks:{color:css("--mute"), autoSkip:true, maxRotation:0, callback:v => fmtD(v, rangeDays && rangeDays <= 7 ? {weekday:"short",day:"numeric"} : {day:"numeric",month:"short"})}},
+         afterBuildTicks: ax => { ax.ticks = dayTicks.map(d => ({value:d.value})); },
+         ticks:{color:css("--mute"), autoSkip:true, maxRotation:0, callback:v => lbl[v] ?? ""}},
       y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
     }};
   liveChart = new Chart(document.getElementById("cl"), {type:"line", data:{datasets:ds}, options:o});
