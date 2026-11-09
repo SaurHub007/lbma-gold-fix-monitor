@@ -322,6 +322,15 @@ def main():
         "verdict": verdict(resp, mag_fix, mag_plc),
         "settings": {"band_pct": BAND * 100, "window_hours": WINDOW_BARS / 12,
                      "lookahead_min": LOOKAHEAD * 5, "magnet_horizon_min": MAGNET_H * 5},
+        "fix_history": [
+            {"date": d,
+             "am": (lambda s: round(float(s.iloc[0]), 2) if len(s) else None)(
+                 g.loc[g.kind == "AM", "level_spot"]),
+             "pm": (lambda s: round(float(s.iloc[0]), 2) if len(s) else None)(
+                 g.loc[g.kind == "PM", "level_spot"]),
+             "official": bool((g["source"] == "official").any())}
+            for d, g in fixes.groupby("date", sort=True)
+        ],
         "chart": {
             "t": [int(t.timestamp()) for t in recent["ts"]],
             "spot": [round(float(c) - basis, 2) for c in recent["close"]],
