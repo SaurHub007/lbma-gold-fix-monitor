@@ -26,7 +26,10 @@
   .up { color:var(--good) } .dn { color:var(--bad) }
   .verdict { margin:16px 0; border-left:4px solid var(--gold) }
   .verdict .h { font-size:18px; font-weight:650 }
-  .chartbox { position:relative; height:380px }
+  .chartbox { position:relative; height:340px }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; color:var(--mute); font-size:13px; margin:-4px 0 8px }
+  .legend i { display:inline-block; width:12px; height:3px; margin-right:6px; vertical-align:middle }
+  .legend i.dash { height:0; border-top:2px dashed; background:none }
   table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums }
   th,td { text-align:right; padding:8px 6px; border-bottom:1px solid var(--line) }
   th:first-child,td:first-child { text-align:left }
@@ -62,9 +65,17 @@
     <div class="s" id="vd"></div>
   </div>
 
-  <div class="card">
-    <h2>Last 5 days — spot price with fix levels (each line lasts 24h)</h2>
-    <div class="chartbox"><canvas id="c"></canvas></div>
+  <div class="two" style="margin-top:0">
+    <div class="card">
+      <h2>LBMA Gold Price — AM &amp; PM fix</h2>
+      <div class="legend"><span><i style="background:var(--am)"></i>AM fix (10:30 London)</span><span><i style="background:var(--pm)"></i>PM fix (15:00 London)</span></div>
+      <div class="chartbox"><canvas id="cf"></canvas></div>
+    </div>
+    <div class="card">
+      <h2><span class="dot"></span>XAU/USD live</h2>
+      <div class="legend"><span><i style="background:var(--gold)"></i>Spot (5-min + live ticks)</span><span><i class="dash" style="border-color:var(--pm)"></i>Today's fixes</span></div>
+      <div class="chartbox"><canvas id="cl"></canvas></div>
+    </div>
   </div>
 
   <div class="two">
@@ -131,38 +142,60 @@ async function loadSummary(){
   drawChart();
 }
 
+const fmtD = (ms, o) => new Date(ms).toLocaleString("en-GB", Object.assign({timeZone:"Europe/London"}, o));
+const baseOpts = (xtick, tip) => ({
+  animation:false, maintainAspectRatio:false, parsing:false,
+  interaction:{mode:"nearest", axis:"x", intersect:false},
+  plugins:{legend:{display:false}, tooltip:{callbacks:{title:i => tip(i[0].parsed.x),
+    label:i => `${i.dataset.label}: ${fmt(i.parsed.y)}`}}},
+  scales:{
+    x:{type:"linear", grid:{color:css("--line")}, ticks:{color:css("--mute"), maxTicksLimit:6, callback:xtick}},
+    y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
+  }});
+let fixChart = null, liveChart = null, liveTicks = [];
+
 function drawChart(){
+  // 1) LBMA AM/PM fix line chart
+  const H = S.fix_history || [];
+  const toPts = k => H.filter(r => r[k] != null).map(r => ({x:Date.parse(r.date+"T12:00:00Z"), y:r[k]}));
+  if (fixChart) fixChart.destroy();
+  fixChart = new Chart(document.getElementById("cf"), {type:"line", data:{datasets:[
+      {label:"AM fix", data:toPts("am"), borderColor:css("--am"), borderWidth:2, pointRadius:2, tension:.2},
+      {label:"PM fix", data:toPts("pm"), borderColor:css("--pm"), borderWidth:2, pointRadius:2, tension:.2}]},
+    options:(() => { const o = baseOpts(v => fmtD(v,{day:"numeric",month:"short"}), x => fmtD(x,{dateStyle:"medium"}));
+      const xs = toPts("pm").concat(toPts("am")).map(p => p.x);
+      o.scales.x.min = Math.min(...xs); o.scales.x.max = Math.max(...xs); return o; })()});
+  drawLive();
+}
+
+function drawLive(){
+  // 2) XAU/USD live: last ~36h of 5-min bars + live ticks, today's fixes as reference
+  const t = S.chart.t, sp = S.chart.spot, from = t.at(-1) - 36*3600;
   const pts = [];
-  S.chart.t.forEach((t,i) => {
-    if (i && t - S.chart.t[i-1] > 3600) pts.push({x:(S.chart.t[i-1]+300)*1000, y:null}); // market closed
-    pts.push({x:t*1000, y:S.chart.spot[i]});
-  });
-  const ds = [{label:"Spot", data:pts, borderColor:css("--gold"), borderWidth:1.5, pointRadius:0, tension:0}];
-  for (const f of S.chart.fixes) {
-    const c = f.kind === "AM" ? css("--am") : css("--pm");
-    ds.push({label:`${f.kind} fix`, data:[{x:f.t*1000,y:f.level},{x:(f.t+86400)*1000,y:f.level}],
-      borderColor:c, borderWidth:1, borderDash:f.source==="official"?[]:[5,4], pointRadius:0});
-  }
-  const ctx = document.getElementById("c");
-  if (chart) chart.destroy();
-  chart = new Chart(ctx, {type:"line", data:{datasets:ds}, options:{
-    animation:false, maintainAspectRatio:false, parsing:false,
-    interaction:{mode:"nearest", intersect:false},
-    plugins:{legend:{display:false}, tooltip:{callbacks:{
-      title: i => new Date(i[0].parsed.x).toLocaleString("en-GB",{timeZone:"Europe/London",dateStyle:"short",timeStyle:"short"}) + " London",
-      label: i => `${i.dataset.label}: ${fmt(i.parsed.y)}`}}},
-    scales:{
-      x:{type:"linear", min:pts[0]?.x, max:pts.at(-1)?.x, grid:{color:css("--line")},
-         ticks:{color:css("--mute"), maxTicksLimit:6,
-           callback:v => new Date(v).toLocaleDateString("en-GB",{timeZone:"Europe/London",weekday:"short",day:"numeric"})}},
-      y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
-    }}});
+  t.forEach((x,i) => { if (x < from) return;
+    if (pts.length && x - t[i-1] > 3600) pts.push({x:(t[i-1]+300)*1000, y:null});
+    pts.push({x:x*1000, y:sp[i]}); });
+  const all = pts.concat(liveTicks.filter(p => p.x > (pts.at(-1)?.x || 0)));
+  const xmin = all[0]?.x, xmax = all.at(-1)?.x;
+  const ds = [{label:"XAU/USD", data:all, borderColor:css("--gold"), borderWidth:1.6, pointRadius:0, spanGaps:false}];
+  const lastDate = S.fix_history?.at(-1);
+  for (const f of S.chart.fixes.filter(f => f.t*1000 >= xmin))
+    ds.push({label:`${f.kind} fix`, data:[{x:Math.max(f.t*1000,xmin),y:f.level},{x:xmax,y:f.level}],
+      borderColor:f.kind==="AM"?css("--am"):css("--pm"), borderWidth:1, borderDash:[5,4], pointRadius:0});
+  if (liveChart) liveChart.destroy();
+  const o = baseOpts(v => fmtD(v,{weekday:"short",hour:"2-digit",minute:"2-digit"}),
+                     x => fmtD(x,{dateStyle:"short",timeStyle:"short"})+" London");
+  o.scales.x.min = xmin; o.scales.x.max = xmax;
+  liveChart = new Chart(document.getElementById("cl"), {type:"line", data:{datasets:ds}, options:o});
 }
 
 async function live(){
   try {
     const j = await (await fetch("https://api.gold-api.com/price/XAU")).json();
     document.getElementById("live").textContent = fmt(j.price);
+    liveTicks.push({x:Date.parse(j.updatedAt) || Date.now(), y:j.price});
+    if (liveTicks.length > 2000) liveTicks.shift();
+    if (S) drawLive();
     document.getElementById("liveTs").textContent = "updated " + new Date(j.updatedAt).toLocaleTimeString();
     const pm = S?.latest_fix?.PM?.level_spot;
     if (pm) {
