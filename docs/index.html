@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LBMA Gold Fix Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#fbfaf7; --card:#fff; --ink:#1d1d1b; --mute:#6b6b66; --line:#e6e3dc;
+          --gold:#b8860b; --am:#2f6fb3; --pm:#c2410c; --good:#15803d; --bad:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141413; --card:#1e1e1c; --ink:#ecebe6; --mute:#9d9b94; --line:#33322f;
+            --gold:#e0b44c; --am:#6aa6e6; --pm:#f08a55; --good:#4ade80; --bad:#f87171; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  .wrap { max-width:1100px; margin:0 auto; padding:24px 16px 48px }
+  h1 { font-size:24px; margin:0 0 4px } h2 { font-size:16px; margin:0 0 12px }
+  .sub { color:var(--mute); margin:0 0 20px }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)) }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px }
+  .k { color:var(--mute); font-size:12px; text-transform:uppercase; letter-spacing:.04em }
+  .v { font-size:26px; font-weight:650; font-variant-numeric:tabular-nums }
+  .s { color:var(--mute); font-size:13px }
+  .up { color:var(--good) } .dn { color:var(--bad) }
+  .verdict { margin:16px 0; border-left:4px solid var(--gold) }
+  .verdict .h { font-size:18px; font-weight:650 }
+  .chartbox { position:relative; height:380px }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums }
+  th,td { text-align:right; padding:8px 6px; border-bottom:1px solid var(--line) }
+  th:first-child,td:first-child { text-align:left }
+  th { color:var(--mute); font-weight:500; font-size:13px }
+  .two { display:grid; gap:12px; grid-template-columns:1fr; margin-top:12px }
+  @media (min-width:800px){ .two { grid-template-columns:1fr 1fr } }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--good);
+         margin-right:6px; animation:p 2s infinite }
+  @keyframes p { 50% { opacity:.3 } }
+  footer { color:var(--mute); font-size:13px; margin-top:24px }
+  a { color:var(--gold) }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>LBMA Gold Fix vs Live XAU/USD</h1>
+  <p class="sub">Does the live gold price respect the LBMA AM/PM fix as a level, or is it just another number?</p>
+
+  <div class="grid">
+    <div class="card"><div class="k"><span class="dot"></span>Live XAU/USD</div>
+      <div class="v" id="live">–</div><div class="s" id="liveTs">loading…</div></div>
+    <div class="card"><div class="k">Latest AM fix</div>
+      <div class="v" id="am">–</div><div class="s" id="amD">–</div></div>
+    <div class="card"><div class="k">Latest PM fix</div>
+      <div class="v" id="pm">–</div><div class="s" id="pmD">–</div></div>
+    <div class="card"><div class="k">Distance from PM fix</div>
+      <div class="v" id="dist">–</div><div class="s" id="distP">–</div></div>
+  </div>
+
+  <div class="card verdict">
+    <div class="k">Verdict so far</div>
+    <div class="h" id="vh">–</div>
+    <div class="s" id="vd"></div>
+  </div>
+
+  <div class="card">
+    <h2>Last 5 days — spot price with fix levels (each line lasts 24h)</h2>
+    <div class="chartbox"><canvas id="c"></canvas></div>
+  </div>
+
+  <div class="two">
+    <div class="card">
+      <h2>Respect test — bounce vs break when price returns to the level</h2>
+      <table id="rt"><thead><tr><th>Level</th><th>Touches</th><th>Bounce</th><th>Break</th><th>Bounce rate</th></tr></thead><tbody></tbody></table>
+      <p class="s" id="rtNote"></p>
+    </div>
+    <div class="card">
+      <h2>Magnet test — does price drift back to the level?</h2>
+      <table id="mt"><thead><tr><th>Anchor</th><th>Samples</th><th>Beta</th><th>t-stat</th></tr></thead><tbody></tbody></table>
+      <p class="s">Regression of the next <span id="mh"></span>-min move on distance from the level.
+        Beta below 0 with |t| &gt; 2 means price gets pulled back toward it.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <h2>Method</h2>
+    <p class="s" id="method"></p>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const fmt = v => v == null ? "–" : "$" + Number(v).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const pct = v => v == null ? "–" : (v*100).toFixed(1) + "%";
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let S = null, chart = null;
+
+async function loadSummary(){
+  S = await (await fetch("data/summary.json?" + Date.now())).json();
+  const am = S.latest_fix.AM, pm = S.latest_fix.PM;
+  document.getElementById("am").textContent = fmt(am?.level_spot);
+  document.getElementById("amD").textContent = am ? `${am.date} · ${am.source}` : "–";
+  document.getElementById("pm").textContent = fmt(pm?.level_spot);
+  document.getElementById("pmD").textContent = pm ? `${pm.date} · ${pm.source}` : "–";
+  document.getElementById("vh").textContent = S.verdict.headline;
+  document.getElementById("vd").innerHTML = S.verdict.details.join("<br>");
+
+  const rb = document.querySelector("#rt tbody"); rb.innerHTML = "";
+  const rows = [["AM fix", S.respect.AM.fix], ["PM fix", S.respect.PM.fix],
+                ["All fixes", S.respect.all.fix], ["Placebo levels", S.respect.all.placebo]];
+  for (const [n,r] of rows) rb.insertAdjacentHTML("beforeend",
+    `<tr><td>${n}</td><td>${r.touches}</td><td>${r.bounces}</td><td>${r.breaks}</td><td>${pct(r.bounce_rate)}</td></tr>`);
+  document.getElementById("rtNote").textContent =
+    `Fix vs placebo: z = ${S.respect.all.z ?? "–"}, p = ${S.respect.all.p_value ?? "–"} (p < 0.05 = significant).`;
+
+  const mb = document.querySelector("#mt tbody"); mb.innerHTML = "";
+  for (const [n,r] of [["Fix levels", S.magnet.fix], ["Placebo times", S.magnet.placebo]])
+    mb.insertAdjacentHTML("beforeend", `<tr><td>${n}</td><td>${r.n}</td><td>${r.beta ?? "–"}</td><td>${r.t ?? "–"}</td></tr>`);
+  document.getElementById("mh").textContent = S.settings.magnet_horizon_min;
+
+  const st = S.settings;
+  document.getElementById("method").innerHTML =
+    `Prices: COMEX gold 5-min bars converted to spot terms with the live futures–spot basis (now ${fmt(S.basis_fut_minus_spot)}). ` +
+    `Fix levels: price at 10:30 (AM) and 15:00 (PM) London; official LBMA prices are used where added to <code>data/lbma_fixes.csv</code> ` +
+    `(${S.official_fixes_used} so far). A <b>touch</b> = price returns within ±${st.band_pct.toFixed(2)}% of the level after being away. ` +
+    `<b>Bounce</b> = moves 3× band back in the original direction within ${st.lookahead_min} min; <b>break</b> = closes 2× band through it first. ` +
+    `Each level is followed for ${st.window_hours}h. <b>Placebo levels</b> = the same method at ordinary times (08:15, 12:45, 19:00 London) ` +
+    `and at fix ±0.25–1.0%. If the fix is special, it must beat the placebos.`;
+  document.getElementById("foot").textContent =
+    `Data ${S.data_from} → ${S.data_to} · ${S.bars.toLocaleString()} bars · ${S.fix_days} fix days · updated ${S.updated_at} by GitHub Actions. Not investment advice.`;
+  drawChart();
+}
+
+function drawChart(){
+  const pts = [];
+  S.chart.t.forEach((t,i) => {
+    if (i && t - S.chart.t[i-1] > 3600) pts.push({x:(S.chart.t[i-1]+300)*1000, y:null}); // market closed
+    pts.push({x:t*1000, y:S.chart.spot[i]});
+  });
+  const ds = [{label:"Spot", data:pts, borderColor:css("--gold"), borderWidth:1.5, pointRadius:0, tension:0}];
+  for (const f of S.chart.fixes) {
+    const c = f.kind === "AM" ? css("--am") : css("--pm");
+    ds.push({label:`${f.kind} fix`, data:[{x:f.t*1000,y:f.level},{x:(f.t+86400)*1000,y:f.level}],
+      borderColor:c, borderWidth:1, borderDash:f.source==="official"?[]:[5,4], pointRadius:0});
+  }
+  const ctx = document.getElementById("c");
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {type:"line", data:{datasets:ds}, options:{
+    animation:false, maintainAspectRatio:false, parsing:false,
+    interaction:{mode:"nearest", intersect:false},
+    plugins:{legend:{display:false}, tooltip:{callbacks:{
+      title: i => new Date(i[0].parsed.x).toLocaleString("en-GB",{timeZone:"Europe/London",dateStyle:"short",timeStyle:"short"}) + " London",
+      label: i => `${i.dataset.label}: ${fmt(i.parsed.y)}`}}},
+    scales:{
+      x:{type:"linear", min:pts[0]?.x, max:pts.at(-1)?.x, grid:{color:css("--line")},
+         ticks:{color:css("--mute"), maxTicksLimit:6,
+           callback:v => new Date(v).toLocaleDateString("en-GB",{timeZone:"Europe/London",weekday:"short",day:"numeric"})}},
+      y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
+    }}});
+}
+
+async function live(){
+  try {
+    const j = await (await fetch("https://api.gold-api.com/price/XAU")).json();
+    document.getElementById("live").textContent = fmt(j.price);
+    document.getElementById("liveTs").textContent = "updated " + new Date(j.updatedAt).toLocaleTimeString();
+    const pm = S?.latest_fix?.PM?.level_spot;
+    if (pm) {
+      const d = j.price - pm, el = document.getElementById("dist");
+      el.textContent = (d >= 0 ? "+" : "−") + fmt(Math.abs(d)).slice(0);
+      el.className = "v " + (d >= 0 ? "up" : "dn");
+      document.getElementById("distP").textContent = `${(d/pm*100).toFixed(2)}% ${d>=0?"above":"below"} PM fix`;
+    }
+  } catch(e) { document.getElementById("liveTs").textContent = "live feed unavailable"; }
+}
+
+loadSummary().then(live);
+setInterval(live, 30000);
+setInterval(loadSummary, 15*60000);
+</script>
+</body>
+</html>
