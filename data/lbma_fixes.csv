@@ -1,0 +1,4 @@
+# Optional: official LBMA Gold Price (USD/oz) copied from lbma.org.uk.
+# Add one row per day; leave a cell empty if you don't have it.
+# Rows here replace the 10:30 / 15:00 London proxy for that day.
+date,am,pm
