@@ -27,7 +27,10 @@
   .verdict { margin:16px 0; border-left:4px solid var(--gold) }
   .verdict .h { font-size:18px; font-weight:650 }
   .chartbox { position:relative; height:340px }
-  .legend { display:flex; gap:16px; flex-wrap:wrap; color:var(--mute); font-size:13px; margin:-4px 0 8px }
+  .rng button { font:inherit; font-size:13px; padding:4px 10px; border:1px solid var(--line); background:transparent;
+                color:var(--mute); border-radius:6px; cursor:pointer; margin-left:4px }
+  .rng button.on { color:var(--ink); border-color:var(--gold) }
+  .legend { margin-top:10px !important; display:flex; gap:16px; flex-wrap:wrap; color:var(--mute); font-size:13px; margin:-4px 0 8px }
   .legend i { display:inline-block; width:12px; height:3px; margin-right:6px; vertical-align:middle }
   .legend i.dash { height:0; border-top:2px dashed; background:none }
   table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums }
@@ -66,8 +69,11 @@
   </div>
 
   <div class="card">
-    <h2><span class="dot"></span>LBMA Gold Price vs XAU/USD live</h2>
-    <div class="legend"><span><i style="background:var(--gold)"></i>XAU/USD spot (5-min + live ticks)</span><span><i style="background:var(--pm)"></i>LBMA price (AM fix → PM fix → next AM…)</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <h2 style="margin:0"><span class="dot"></span>LBMA Gold Price vs XAU/USD live</h2>
+      <div class="rng" id="rng"><button data-d="2">2D</button><button data-d="7">1W</button><button data-d="0" class="on">All</button></div>
+    </div>
+    <div class="legend"><span><i style="background:var(--gold)"></i>XAU/USD spot (live)</span><span><i style="background:var(--pm)"></i>LBMA price (AM fix → PM fix → next AM…)</span></div>
     <div class="chartbox" style="height:420px"><canvas id="cl"></canvas></div>
   </div>
 
@@ -145,7 +151,13 @@ const baseOpts = (xtick, tip) => ({
     x:{type:"linear", grid:{color:css("--line")}, ticks:{color:css("--mute"), maxTicksLimit:6, callback:xtick}},
     y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
   }});
-let fixChart = null, liveChart = null, liveTicks = [];
+let fixChart = null, liveChart = null, liveTicks = [], rangeDays = 0;
+document.getElementById("rng").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  rangeDays = +b.dataset.d;
+  document.querySelectorAll("#rng button").forEach(x => x.classList.toggle("on", x === b));
+  if (S) drawLive();
+});
 
 function drawChart(){ drawLive(); }
 
@@ -155,8 +167,11 @@ function drawLive(){
   t.forEach((x,i) => {
     if (i && x - t[i-1] > 3600) pts.push({x:(t[i-1]+300)*1000, y:null}); // market closed
     pts.push({x:x*1000, y:sp[i]}); });
-  const all = pts.concat(liveTicks.filter(p => p.x > (pts.at(-1)?.x || 0)));
-  const xmin = all[0]?.x, xmax = all.at(-1)?.x;
+  let all = pts.concat(liveTicks.filter(p => p.x > (pts.at(-1)?.x || 0)));
+  const xmax = all.at(-1)?.x;
+  if (rangeDays) all = all.filter(p => p.x >= xmax - rangeDays*864e5);
+  while (all.length && all[0].y == null) all.shift();
+  const xmin = all[0]?.x;
   // one continuous LBMA line: each fix holds until the next one replaces it
   const fx = S.chart.fixes.slice().sort((a,b) => a.t - b.t);
   const lb = [];
@@ -190,7 +205,7 @@ function drawLive(){
              if (m >= xmin && m <= xmax) ticks.push({value:m});
            }
            ax.ticks = ticks; },
-         ticks:{color:css("--mute"), autoSkip:true, maxRotation:0, callback:v => fmtD(v,{weekday:"short",day:"numeric"})}},
+         ticks:{color:css("--mute"), autoSkip:true, maxRotation:0, callback:v => fmtD(v, rangeDays && rangeDays <= 7 ? {weekday:"short",day:"numeric"} : {day:"numeric",month:"short"})}},
       y:{grid:{color:css("--line")}, ticks:{color:css("--mute"), callback:v => "$"+v.toLocaleString()}}
     }};
   liveChart = new Chart(document.getElementById("cl"), {type:"line", data:{datasets:ds}, options:o});
