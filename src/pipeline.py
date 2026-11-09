@@ -43,6 +43,7 @@ BAND = 0.001          # +/-0.10% of level counts as "at the level" (~$4 at $4,00
 WINDOW_BARS = 12 * 24  # follow each level for 24 hours of 5-min bars
 LOOKAHEAD = 12        # 1 hour to decide bounce vs break
 MAGNET_H = 24         # 2-hour forward return for the magnet test
+CHART_START = "2026-10-09"   # chart begins here and keeps growing
 UA = {"User-Agent": "Mozilla/5.0 (lbma-gold-fix-monitor; research project)"}
 
 
@@ -290,10 +291,15 @@ def main():
     mag_fix = magnet_beta(df, fixes)
     mag_plc = magnet_beta(df, plc)
 
-    # recent chart data (spot terms)
-    cutoff = df["ts"].iloc[-1] - pd.Timedelta(days=5)
-    recent = df[df["ts"] >= cutoff]
-    rec_fix = fixes[fixes["ts"] >= cutoff - pd.Timedelta(days=1)]
+    # chart data (spot terms): fixed start date, grows every day from there.
+    # last 7 days at 5-min, older history thinned to 30-min to keep the file small
+    cutoff = pd.Timestamp(CHART_START, tz="UTC")
+    hist = df[df["ts"] >= cutoff]
+    fine_from = df["ts"].iloc[-1] - pd.Timedelta(days=7)
+    old_part = hist[hist["ts"] < fine_from]
+    old_part = old_part[old_part["ts"].dt.minute % 30 == 0]
+    recent = pd.concat([old_part, hist[hist["ts"] >= fine_from]])
+    rec_fix = fixes[fixes["ts"] >= cutoff - pd.Timedelta(days=3)]
 
     latest = {k: None for k in FIX_TIMES}
     for kind in FIX_TIMES:
