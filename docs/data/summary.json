@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-27T02:32:12Z",
+ "updated_at": "2026-11-27T11:34:54Z",
  "data_from": "2026-08-31",
  "data_to": "2026-11-26T04:55Z",
  "bars": 17053,
@@ -7,8 +7,8 @@
  "official_fixes_used": 0,
  "basis_fut_minus_spot": 0.0,
  "last_spot_snapshot": {
-  "ts": "2026-11-27T02:32:11Z",
-  "spot": 3611.800049
+  "ts": "2026-11-27T11:34:54Z",
+  "spot": 3676.899902
  },
  "latest_fix": {
   "AM": {
